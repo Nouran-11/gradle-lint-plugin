@@ -147,9 +147,4 @@ abstract class LintService implements BuildService<LintService.Params>, AutoClos
 
         return analyzer.resultsForRootProject
     }
-
-    @Override
-    void close() {
-        // Cleanup any resources if needed
-    }
 }
