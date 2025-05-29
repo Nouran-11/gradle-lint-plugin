@@ -1,7 +1,7 @@
 plugins {
-    id 'com.gradle.enterprise' version '3.8.1'
+   // id 'com.gradle.enterprise' version '3.8.1'
 }
-
+/*
 gradleEnterprise {
     buildScan {
         publishAlways()
@@ -9,5 +9,5 @@ gradleEnterprise {
         termsOfServiceAgree = 'yes'
     }
 }
-
+*/
 rootProject.name = 'gradle-lint-plugin'

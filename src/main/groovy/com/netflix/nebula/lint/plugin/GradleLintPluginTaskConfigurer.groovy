@@ -32,7 +32,7 @@ class GradleLintPluginTaskConfigurer extends AbstractLintPluginTaskConfigurer {
             @Override
             void execute(GradleLintReportTask gradleLintReportTask) {
                 gradleLintReportTask.reportOnlyFixableViolations = getReportOnlyFixableViolations(project, extension)
-                gradleLintReportTask.notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
+               // gradleLintReportTask.notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
 
                 gradleLintReportTask.reports.all { report ->
                     def fileSuffix = report.name == 'text' ? 'txt' : report.name
@@ -53,7 +53,7 @@ class GradleLintPluginTaskConfigurer extends AbstractLintPluginTaskConfigurer {
                 group = LINT_GROUP
                 listeners = lintExt.listeners
                 projectRootDir.set(project.rootDir)
-                notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
+               // notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
             }
 
             def manualLintTask = project.tasks.register(LINT_GRADLE, LintGradleTask)
@@ -61,7 +61,7 @@ class GradleLintPluginTaskConfigurer extends AbstractLintPluginTaskConfigurer {
                 group = LINT_GROUP
                 failOnWarning.set(true)
                 projectRootDir.set(project.rootDir)
-                notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
+                //notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
             }
 
 
@@ -70,20 +70,20 @@ class GradleLintPluginTaskConfigurer extends AbstractLintPluginTaskConfigurer {
                 group = LINT_GROUP
                 onlyCriticalRules.set(true)
                 projectRootDir.set(project.rootDir)
-                notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
+              //  notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
             }
 
 
             def fixTask = project.tasks.register(FIX_GRADLE_LINT, FixGradleLintTask)
             fixTask.configure {
                 userDefinedListeners.set(lintExt.listeners)
-                notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
+               // notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
             }
 
             def fixTask2 = project.tasks.register(FIX_LINT_GRADLE, FixGradleLintTask)
             fixTask2.configure {
                 userDefinedListeners.set(lintExt.listeners)
-                notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
+             //   notCompatibleWithConfigurationCache("Gradle Lint Plugin is not compatible with configuration cache because it requires project model")
             }
 
             List<TaskProvider> lintTasks = [fixTask, fixTask2, manualLintTask]

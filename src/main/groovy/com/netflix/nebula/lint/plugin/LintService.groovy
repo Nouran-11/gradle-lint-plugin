@@ -31,25 +31,36 @@ import org.codenarc.ruleset.RuleSet
 import org.codenarc.source.SourceString
 import org.gradle.api.Project
 import org.gradle.api.UnknownDomainObjectException
+import org.gradle.api.provider.Property
+import org.gradle.api.provider.Provider
+import org.gradle.api.services.BuildService
+import org.gradle.api.services.BuildServiceParameters
+import java.io.Serializable
 
-class LintService {
-    def registry = new LintRuleRegistry()
+abstract class LintService implements BuildService<LintService.Params>, AutoCloseable, Serializable {
+    interface Params extends BuildServiceParameters {
+        Property<String> getProjectDir()
+    }
+
+    private final registry = new LintRuleRegistry()
 
     /**
      * An analyzer that can be used over and over again against multiple subprojects, compiling the results, and recording
      * the affected files according to which files the violation fixes touch
      */
-    class ReportableAnalyzer extends AbstractSourceAnalyzer {
+    class ReportableAnalyzer extends AbstractSourceAnalyzer implements Serializable {
         DirectoryResults resultsForRootProject
+        private final String projectPath
 
-        ReportableAnalyzer(Project project) {
-            resultsForRootProject = new DirectoryResults(project.projectDir.absolutePath)
+        ReportableAnalyzer(String projectDir) {
+            this.projectPath = projectDir
+            resultsForRootProject = new DirectoryResults(projectPath)
         }
 
-        Results analyze(Project analyzedProject, String source, RuleSet ruleSet) {
+        Results analyze(String analyzedProjectDir, String source, RuleSet ruleSet) {
             DirectoryResults results
-            if (resultsForRootProject.path != analyzedProject.projectDir.absolutePath) {
-                results = new DirectoryResults(analyzedProject.projectDir.absolutePath)
+            if (resultsForRootProject.path != analyzedProjectDir) {
+                results = new DirectoryResults(analyzedProjectDir)
                 resultsForRootProject.addChild(results)
             } else {
                 results = resultsForRootProject
@@ -85,7 +96,8 @@ class LintService {
                 extension = p.rootProject.extensions.getByType(GradleLintExtension)
             }
 
-            def rules = (p.hasProperty('gradleLint.rules') ? p.property('gradleLint.rules') : null)?.toString()?.split(',')?.toList() ?:
+            Provider<String> rulesProvider = p.providers.gradleProperty('gradleLint.rules')
+            def rules = rulesProvider.present ? rulesProvider.get().split(',').toList() :
                     extension.rules + extension.criticalRules
 
             def includedRules = rules.unique()
@@ -96,8 +108,9 @@ class LintService {
                 includedRules = includedRules.findAll { it instanceof GradleLintRule && it.critical }
             }
 
-            def excludedRules = (p.hasProperty('gradleLint.excludedRules') ?
-                    p.property('gradleLint.excludedRules').toString().split(',').toList() : []) + extension.excludedRules
+            Provider<String> excludedRulesProvider = p.providers.gradleProperty('gradleLint.excludedRules')
+            def excludedRules = (excludedRulesProvider.present ?
+                    excludedRulesProvider.get().split(',').toList() : []) + extension.excludedRules
             if (!excludedRules.isEmpty())
                 includedRules.retainAll { !excludedRules.contains(it.name) }
 
@@ -113,7 +126,7 @@ class LintService {
     }
 
     Results lint(Project project, boolean onlyCriticalRules) {
-        def analyzer = new ReportableAnalyzer(project)
+        def analyzer = new ReportableAnalyzer(project.projectDir.absolutePath)
 
         ([project] + project.subprojects).each { p ->
             def files = SourceCollector.getAllFiles(p.buildFile, p)
@@ -126,12 +139,17 @@ class LintService {
                         rule.buildFiles = buildFiles
                 }
 
-                analyzer.analyze(p, buildFiles.text, ruleSet)
+                analyzer.analyze(p.projectDir.absolutePath, buildFiles.text, ruleSet)
 
                 DependencyService.removeForProject(p)
             }
         }
 
         return analyzer.resultsForRootProject
+    }
+
+    @Override
+    void close() {
+        // Cleanup any resources if needed
     }
 }
