@@ -31,128 +31,107 @@ import org.codenarc.ruleset.RuleSet
 import org.codenarc.source.SourceString
 import org.gradle.api.Project
 import org.gradle.api.UnknownDomainObjectException
-import org.gradle.api.file.FileCollection
-import org.gradle.api.model.ObjectFactory
-import org.gradle.api.provider.Property
-
-import javax.inject.Inject
-import java.util.stream.Collectors
 
 class LintService {
+    def registry = new LintRuleRegistry()
 
-    private final ObjectFactory objectFactory
-    private final LintRuleRegistry registry
+    /**
+     * An analyzer that can be used over and over again against multiple subprojects, compiling the results, and recording
+     * the affected files according to which files the violation fixes touch
+     */
+    class ReportableAnalyzer extends AbstractSourceAnalyzer {
+        DirectoryResults resultsForRootProject
 
-    @Inject
-    LintService(ObjectFactory objectFactory) {
-        this.objectFactory = objectFactory
-        this.registry = new LintRuleRegistry()
-    }
-
-    static class ReportableAnalyzer extends AbstractSourceAnalyzer implements Serializable {
-        private final Property<String> rootProjectPath
-
-        ReportableAnalyzer(Project project, ObjectFactory objectFactory) {
-            this.rootProjectPath = objectFactory.property(String.class)
-            this.rootProjectPath.set(project.getProjectDir().getAbsolutePath())
+        ReportableAnalyzer(Project project) {
+            resultsForRootProject = new DirectoryResults(project.projectDir.absolutePath)
         }
 
         Results analyze(Project analyzedProject, String source, RuleSet ruleSet) {
-            DirectoryResults results = new DirectoryResults(analyzedProject.getProjectDir().getAbsolutePath())
+            DirectoryResults results
+            if (resultsForRootProject.path != analyzedProject.projectDir.absolutePath) {
+                results = new DirectoryResults(analyzedProject.projectDir.absolutePath)
+                resultsForRootProject.addChild(results)
+            } else {
+                results = resultsForRootProject
+            }
 
-            List<GradleViolation> violations = collectViolations(new SourceString(source), ruleSet) as List<GradleViolation>
+            def violations = (collectViolations(new SourceString(source), ruleSet) as List<GradleViolation>)
 
-            violations.stream()
-                    .collect(Collectors.groupingBy(GradleViolation::getFile))
-                    .forEach((file, fileViolations) -> {
-                        results.addChild(new FileResults(file.getAbsolutePath(), fileViolations))
-                        results.setNumberOfFilesInThisDirectory(results.getNumberOfFilesInThisDirectory() + 1)
-                    })
+            violations.groupBy { it.file }.each { file, fileViolations ->
+                results.addChild(new FileResults(file.absolutePath, fileViolations))
+                results.numberOfFilesInThisDirectory++
+            }
 
-            return results
+            resultsForRootProject
         }
 
         @Override
         Results analyze(RuleSet ruleSet) {
-            throw new UnsupportedOperationException("Use the two-argument form instead")
+            throw new UnsupportedOperationException('use the two argument form instead')
         }
 
-        @Override
-        List<String> getSourceDirectories() {
-            return List.of()
+        List getSourceDirectories() {
+            []
         }
     }
 
-    private RuleSet ruleSetForProject(Project project, boolean onlyCriticalRules) {
-        if (!project.getBuildFile().exists()) {
-            return new ListRuleSet(List.of())
+    private RuleSet ruleSetForProject(Project p, boolean onlyCriticalRules) {
+        if (p.buildFile.exists()) {
+            GradleLintExtension extension
+            try {
+                extension = p.extensions.getByType(GradleLintExtension)
+            } catch (UnknownDomainObjectException ignored) {
+                // if the subproject has not applied lint, use the extension configuration from the root project
+                extension = p.rootProject.extensions.getByType(GradleLintExtension)
+            }
+
+            def rules = (p.hasProperty('gradleLint.rules') ? p.property('gradleLint.rules') : null)?.toString()?.split(',')?.toList() ?:
+                    extension.rules + extension.criticalRules
+
+            def includedRules = rules.unique()
+                    .collect { registry.buildRules(it, p, extension.criticalRules.contains(it)) }
+                    .flatten() as List<Rule>
+
+            if (onlyCriticalRules) {
+                includedRules = includedRules.findAll { it instanceof GradleLintRule && it.critical }
+            }
+
+            def excludedRules = (p.hasProperty('gradleLint.excludedRules') ?
+                    p.property('gradleLint.excludedRules').toString().split(',').toList() : []) + extension.excludedRules
+            if (!excludedRules.isEmpty())
+                includedRules.retainAll { !excludedRules.contains(it.name) }
+
+            return RuleSetFactory.configureRuleSet(includedRules)
         }
-
-        GradleLintExtension extension
-        try {
-            extension = project.getExtensions().getByType(GradleLintExtension.class)
-        } catch (UnknownDomainObjectException ignored) {
-            extension = project.getRootProject().getExtensions().getByType(GradleLintExtension.class)
-        }
-
-        List<String> rules = project.hasProperty("gradleLint.rules") ?
-                List.of(project.property("gradleLint.rules").toString().split(",")) :
-                extension.getRules()
-
-        List<Rule> includedRules = rules.stream()
-                .distinct()
-                .flatMap(rule -> registry.buildRules(rule, project, extension.getCriticalRules().contains(rule)).stream())
-                .collect(Collectors.toList())
-
-        if (onlyCriticalRules) {
-            includedRules = includedRules.stream()
-                    .filter(rule -> rule instanceof GradleLintRule && ((GradleLintRule) rule).isCritical())
-                    .collect(Collectors.toList())
-        }
-
-        List<String> excludedRules = project.hasProperty("gradleLint.excludedRules") ?
-                List.of(project.property("gradleLint.excludedRules").toString().split(",")) :
-                extension.getExcludedRules()
-
-        includedRules.removeIf(rule -> excludedRules.contains(rule.getName()))
-
-        return RuleSetFactory.configureRuleSet(includedRules)
+        return new ListRuleSet([])
     }
 
-     RuleSet ruleSet(Project project) {
-        CompositeRuleSet ruleSet = new CompositeRuleSet()
-
-        List<Project> allProjects = List.of(project, project.getSubprojects().toArray(new Project[0]))
-
-        for (Project p : allProjects) {
-            ruleSet.addRuleSet(ruleSetForProject(p, false))
-        }
-
+    RuleSet ruleSet(Project project) {
+        def ruleSet = new CompositeRuleSet()
+        ([project] + project.subprojects).each { p -> ruleSet.addRuleSet(ruleSetForProject(p, false)) }
         return ruleSet
     }
 
-     Results lint(Project project, boolean onlyCriticalRules) {
-        ReportableAnalyzer analyzer = new ReportableAnalyzer(project, objectFactory)
+    Results lint(Project project, boolean onlyCriticalRules) {
+        def analyzer = new ReportableAnalyzer(project)
 
-        List<Project> allProjects = List.of(project, project.getSubprojects().toArray(new Project[0]))
-
-        for (Project p : allProjects) {
-            FileCollection files = project.files(p.getBuildFile())
-            BuildFiles buildFiles = new BuildFiles(files.getAsFileTree().getFiles() as List<File>)
-            RuleSet ruleSet = ruleSetForProject(p, onlyCriticalRules)
-
-            if (!ruleSet.getRules().isEmpty()) {
-                for (Rule rule : (ruleSet.getRules() as List<Rule>)) {
-                    if (rule instanceof GradleLintRule) {
-                        ((GradleLintRule) rule).setBuildFiles(buildFiles)
-                    }
+        ([project] + project.subprojects).each { p ->
+            def files = SourceCollector.getAllFiles(p.buildFile, p)
+            def buildFiles = new BuildFiles(files)
+            def ruleSet = ruleSetForProject(p, onlyCriticalRules)
+            if (!ruleSet.rules.isEmpty()) {
+                // establish which file we are linting for each rule
+                ruleSet.rules.each { rule ->
+                    if (rule instanceof GradleLintRule)
+                        rule.buildFiles = buildFiles
                 }
 
-                analyzer.analyze(p, buildFiles.getText(), ruleSet)
+                analyzer.analyze(p, buildFiles.text, ruleSet)
+
                 DependencyService.removeForProject(p)
             }
         }
 
-        return analyzer.analyze(ruleSet(project))
+        return analyzer.resultsForRootProject
     }
 }
