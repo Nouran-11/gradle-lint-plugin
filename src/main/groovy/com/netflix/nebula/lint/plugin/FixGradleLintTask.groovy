@@ -112,7 +112,7 @@ abstract class FixGradleLintTask extends DefaultTask implements VerificationTask
                 if (violations.empty) {
                     textOutput.println("Passed lint check with 0 violations; no corrections necessary")
                 } else {
-                    textOutput..text('\nThis project contains lint violations. ')
+                    textOutput.withStyle(Style.Header).text('\nThis project contains lint violations. ')
                     textOutput.println('A complete listing of my attempt to fix them follows. Please review and commit the changes.\n')
                 }
 
