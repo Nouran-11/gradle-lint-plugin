@@ -46,7 +46,7 @@ class DependencyService {
         return extension.dependencyService
     }
 
-    static synchronized void removeForProject(ProjectInfo project) {
+    static synchronized void removeForProject(Project project) {
         def extension = project.extensions.findByType(DependencyServiceExtension)
         if (extension) {
             extension.dependencyService = null

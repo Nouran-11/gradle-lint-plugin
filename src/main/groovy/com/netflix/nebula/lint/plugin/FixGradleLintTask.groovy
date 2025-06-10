@@ -15,29 +15,40 @@
  */
 package com.netflix.nebula.lint.plugin
 
-import com.netflix.nebula.lint.GradleLintInfoBrokerAction
-import com.netflix.nebula.lint.GradleLintPatchAction
-import com.netflix.nebula.lint.GradleLintViolationAction
-import com.netflix.nebula.lint.GradleViolation
-import com.netflix.nebula.lint.StyledTextService
-
+import com.netflix.nebula.lint.*
 import org.eclipse.jgit.api.ApplyCommand
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
+import org.gradle.api.Project
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
-import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.Internal
-import org.gradle.api.tasks.Optional
-import org.gradle.api.tasks.TaskAction
-import org.gradle.api.tasks.VerificationTask
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.*
 import org.gradle.internal.deprecation.DeprecationLogger
+import org.gradle.internal.logging.text.StyledTextOutput
+import org.gradle.internal.logging.text.StyledTextOutputFactory
+
+import javax.inject.Inject
 
 import static com.netflix.nebula.lint.StyledTextService.Styling.*
-
+import static org.gradle.internal.logging.text.StyledTextOutput.Style
 abstract class FixGradleLintTask extends DefaultTask implements VerificationTask {
     @Input
     @Optional
     abstract ListProperty<GradleLintViolationAction> getUserDefinedListeners()
+    @InputDirectory
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract DirectoryProperty getRootDirectory()
+
+    @Internal
+    abstract DirectoryProperty getBuildDirectory()
+
+    @Nested
+    abstract Property<ProjectTree> getProjectTree()
+
+    @Inject
+    protected abstract StyledTextOutputFactory getStyledTextOutputFactory()
+
 
     /**
      * Special listener tied into nebula.metrics via nebula.info to ship violation information to a
@@ -52,13 +63,28 @@ abstract class FixGradleLintTask extends DefaultTask implements VerificationTask
         userDefinedListeners.convention([])
         outputs.upToDateWhen { false }
         group = 'lint'
+        Project project = getProject()
+        rootDirectory.set(project.getRootDir())
+        buildDirectory.set(project.getLayout().getBuildDirectory())
+        projectTree.set(project.getProviders().provider(() -> computeProjectTree(project.getRootProject())))
+        doNotTrackState("Bypassing persistent file locking issue in the build environment.")
+    }
+
+    protected ProjectTree computeProjectTree(Project project) {
+        GradleLintExtension rootExt = project.extensions.findByType(GradleLintExtension.class)
+        if (rootExt == null) {
+            throw new IllegalStateException("GradleLintExtension not found on root project. Please ensure the lint plugin is applied to the root project.")
+        }
+        List<ProjectInfo> projectInfos = ([project] + project.getSubprojects().asList()).collect {Project p -> ProjectInfo.from(p, rootExt) }
+        return new ProjectTree(projectInfos)
     }
 
     @TaskAction
     void lintCorrections() {
         //TODO: address Invocation of Task.project at execution time has been deprecated.
         DeprecationLogger.whileDisabled {
-            def violations = new LintService().lint(project, false).violations
+            Project project = getProject()
+            def violations = new LintService(project.getRootProject()).lint(projectTree.get(), false).violations
                     .unique { v1, v2 -> v1.is(v2) ? 0 : 1 }
 
             (userDefinedListeners.get() + infoBrokerAction + new GradleLintPatchAction(project)).each {
@@ -70,24 +96,23 @@ abstract class FixGradleLintTask extends DefaultTask implements VerificationTask
                 new ApplyCommand(new NotNecessarilyGitRepository(project.projectDir)).setPatch(patchFile.newInputStream()).call()
             }
 
-            (userDefinedListeners.get() + infoBrokerAction + consoleOutputAction()).each {
+            (userDefinedListeners.get() + infoBrokerAction + consoleOutputAction).each {
                 it.lintFixesApplied(violations)
             }
         }
-
-
     }
-
-    GradleLintViolationAction consoleOutputAction() {
-        new GradleLintViolationAction() {
-            StyledTextService textOutput = new StyledTextService(getServices())
-
+    @Internal
+  final GradleLintViolationAction consoleOutputAction = new GradleLintViolationAction() {
             @Override
             void lintFixesApplied(Collection<GradleViolation> violations) {
+                StyledTextOutputFactory styledTextOutputFactory = getStyledTextOutputFactory()
+                File rootDir = getRootDirectory().get().asFile
+
+                StyledTextOutput textOutput = styledTextOutputFactory.create("nebula-fix-lint")
                 if (violations.empty) {
-                    textOutput.withStyle(Green).println("Passed lint check with 0 violations; no corrections necessary")
+                    textOutput.println("Passed lint check with 0 violations; no corrections necessary")
                 } else {
-                    textOutput.withStyle(Bold).text('\nThis project contains lint violations. ')
+                    textOutput..text('\nThis project contains lint violations. ')
                     textOutput.println('A complete listing of my attempt to fix them follows. Please review and commit the changes.\n')
                 }
 
@@ -97,40 +122,40 @@ abstract class FixGradleLintTask extends DefaultTask implements VerificationTask
                 violations.groupBy { it.file }.each { buildFile, projectViolations ->
 
                     projectViolations.each { v ->
-                        String buildFilePath = project.rootDir.toURI().relativize(v.file.toURI()).toString()
+                        String buildFilePath = rootDir.toURI().relativize(v.file.toURI()).toString()
                         def unfixed = v.fixes.findAll { it.reasonForNotFixing != null }
                         if (v.fixes.empty) {
-                            textOutput.withStyle(Yellow).text('needs fixing'.padRight(15))
+                            textOutput.text('needs fixing'.padRight(15))
                             if (v.rule.priority == 1) {
                                 unfixedCriticalViolations++
                             }
                         } else if (unfixed.empty) {
-                            textOutput.withStyle(Green).text('fixed'.padRight(15))
+                            textOutput.text('fixed'.padRight(15))
                             completelyFixed++
                         } else if (unfixed.size() == v.fixes.size()) {
-                            textOutput.withStyle(Yellow).text('unfixed'.padRight(15))
+                            textOutput.text('unfixed'.padRight(15))
                             if (v.rule.priority == 1) {
                                 unfixedCriticalViolations++
                             }
                         } else {
-                            textOutput.withStyle(Yellow).text('semi-fixed'.padRight(15))
+                            textOutput.text('semi-fixed'.padRight(15))
                             if (v.rule.priority == 1) {
                                 unfixedCriticalViolations++
                             }
                         }
 
                         textOutput.text(v.rule.name.padRight(35))
-                        textOutput.withStyle(Yellow).println(v.message)
+                        textOutput.println(v.message)
 
                         if (v.lineNumber) {
-                            textOutput.withStyle(Bold).println(buildFilePath + ':' + v.lineNumber)
+                            textOutput.println(buildFilePath + ':' + v.lineNumber)
                         }
                         if (v.sourceLine) {
                             textOutput.println(v.sourceLine)
                         }
 
                         if (!unfixed.empty) {
-                            textOutput.withStyle(Bold).println('reason not fixed: ')
+                            textOutput.println('reason not fixed: ')
                             unfixed.collect { it.reasonForNotFixing }.unique().each { textOutput.println(it.message) }
                         }
 
@@ -138,7 +163,7 @@ abstract class FixGradleLintTask extends DefaultTask implements VerificationTask
                     }
                 }
 
-                textOutput.withStyle(Green).println("Corrected $completelyFixed lint problems\n")
+                textOutput.println("Corrected $completelyFixed lint problems\n")
 
                 if (unfixedCriticalViolations > 0) {
                     throw new GradleException("This build contains $unfixedCriticalViolations critical lint violation" +
@@ -147,4 +172,4 @@ abstract class FixGradleLintTask extends DefaultTask implements VerificationTask
             }
         }
     }
-}
+

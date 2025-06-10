@@ -96,7 +96,7 @@ abstract class GradleLintReportTask extends DefaultTask implements VerificationT
                 def textOutput = new StyledTextService(getServices())
 
                 textOutput.text('Generated a report containing information about ')
-                textOutput.withStyle(Bold).text("$violationCount lint violation${violationCount == 1 ? '' : 's'}")
+                textOutput.text("$violationCount lint violation${violationCount == 1 ? '' : 's'}")
                 textOutput.println(' in this project')
 
                 reports.each {

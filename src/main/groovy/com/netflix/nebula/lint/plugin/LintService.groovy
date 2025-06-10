@@ -20,6 +20,7 @@ package com.netflix.nebula.lint.plugin
 import com.netflix.nebula.lint.GradleViolation
 import com.netflix.nebula.lint.rule.BuildFiles
 import com.netflix.nebula.lint.rule.GradleLintRule
+import com.netflix.nebula.lint.rule.ModelAwareGradleLintRule
 import com.netflix.nebula.lint.rule.dependency.DependencyService
 import org.codenarc.analyzer.AbstractSourceAnalyzer
 import org.codenarc.results.DirectoryResults
@@ -35,6 +36,8 @@ import org.gradle.api.Project
 import java.util.function.Supplier
 
 class LintService {
+    private final Project rootProject
+    LintService(Project rootProject) { this.rootProject = rootProject }
     def registry = new LintRuleRegistry()
 
     /**
@@ -77,15 +80,14 @@ class LintService {
         }
     }
 
-    private RuleSet ruleSetForProject(ProjectInfo p, boolean onlyCriticalRules) {
+    private RuleSet ruleSetForProject(Project rootProject,ProjectInfo p, boolean onlyCriticalRules) {
         if (p.buildFile == null || !p.buildFile.exists()) {
             LOGGER.warn("Build file for project '{}' (path: '{}') is null or does not exist. Returning empty ruleset.", p.name, p.path)
             return new ListRuleSet([])
         }
 
         List<String> rulesToConsider = p.effectiveRuleNames ?: []
-
-        Supplier<Project> projectSupplier = { -> null } as Supplier<Project>
+        Supplier<Project> projectSupplier = { -> rootProject.project(p.path) } as Supplier<Project>
 
         List<Rule> includedRules = rulesToConsider.unique()
                 .collect { String ruleName ->
@@ -108,13 +110,13 @@ class LintService {
 
     RuleSet ruleSet(ProjectTree projectTree) {
         def ruleSet = new CompositeRuleSet()
-        projectTree.allProjects.each { ProjectInfo pInfo ->
-            ruleSet.addRuleSet(ruleSetForProject(pInfo, false))
+        projectTree.allProjects.each { p ->
+            ruleSet.addRuleSet(ruleSetForProject(rootProject,p, false))
         }
         return ruleSet
     }
 
-    Results lint(ProjectTree projectTree , boolean onlyCriticalRules) {
+    Results lint(ProjectTree projectTree ,boolean onlyCriticalRules) {
         if (projectTree.allProjects.isEmpty()) {
             return new DirectoryResults("empty_project_tree_results") // Return empty results
         }
@@ -123,20 +125,25 @@ class LintService {
        // assert projectTree.getOrNull() != null
         //assert !projectTree.get().allProjects.empty
         //List<Project> projectsToLint = [project] + project.subprojects
-        projectTree.allProjects.each {p ->
+        projectTree.allProjects.each {p ->         //here
             def files = SourceCollector.getAllFiles(p.buildFile, p)
             def buildFiles = new BuildFiles(files)
-            def ruleSet = ruleSetForProject(p, onlyCriticalRules)
+            def ruleSet = ruleSetForProject(rootProject,p,onlyCriticalRules)
             if (!ruleSet.rules.isEmpty()) {
+                boolean containsModelAwareRule = false
                 // establish which file we are linting for each rule
                 ruleSet.rules.each { rule ->
                     if (rule instanceof GradleLintRule)
                         rule.buildFiles = buildFiles
+                    containsModelAwareRule = containsModelAwareRule || rule instanceof ModelAwareGradleLintRule
                 }
 
-                analyzer.analyze(p, buildFiles.text, ruleSet)
-
-                DependencyService.removeForProject(p)
+                analyzer.analyze( p,buildFiles.text, ruleSet)  //here
+                if(containsModelAwareRule){
+                  //  Project actualProject = projectSupplier.get()
+                    Project actualProject = rootProject.project(p.path)
+                    DependencyService.removeForProject(actualProject )
+                }
             }
         }
 
