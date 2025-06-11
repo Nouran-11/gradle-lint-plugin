@@ -44,6 +44,10 @@ class LintRuleRegistry {
             return (ruleDescriptor.includes?.collect { findRules(it as String) }?.flatten() ?: []) as List<String>
     }
 
+    List<Rule> buildRules(String ruleId, Project project, boolean critical) {
+        return buildRules(ruleId, { project }, critical)
+    }
+
 
 
     List<Rule> buildRules(String ruleId, Supplier<Project> project, boolean critical) {
