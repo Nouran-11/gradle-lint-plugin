@@ -16,6 +16,7 @@
 
 package com.netflix.nebula.lint
 
+import com.netflix.nebula.lint.plugin.ProjectInfo
 import groovy.transform.Canonical
 import org.apache.commons.lang.StringUtils
 import org.gradle.api.Project
@@ -25,16 +26,19 @@ import static com.netflix.nebula.lint.PatchType.*
 import static java.nio.file.Files.readSymbolicLink
 
 @Canonical
-class GradleLintPatchAction extends GradleLintViolationAction {
-    Project project
-
+class GradleLintPatchAction extends GradleLintViolationAction  {
+    //ProjectInfo projectInfo
+    private final File rootBuildDir;
+    GradleLintPatchAction(File rootBuildDir) {
+        this.rootBuildDir = rootBuildDir;
+    }
     static final String PATCH_NAME = 'lint.patch'
 
     @Override
     void lintFinished(Collection<GradleViolation> violations) {
-        File buildDir = project.layout.buildDirectory.asFile.getOrElse(new File(project.projectDir, "build"))
-        buildDir.mkdirs()
-        new File(buildDir, PATCH_NAME).withWriter { w ->
+       // File buildDir = projectInfo.layout.buildDirectory.asFile.getOrElse(new File(projectInfo.projectDir, "build"))
+        rootBuildDir.mkdirs()
+        new File(rootBuildDir, PATCH_NAME).withWriter { w ->
             def patch = patch(violations*.fixes.flatten() as List<GradleLintFix>)
             w.write(patch)
         }

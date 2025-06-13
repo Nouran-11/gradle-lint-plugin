@@ -21,6 +21,7 @@ import com.netflix.nebula.lint.rule.ModelAwareGradleLintRule
 import org.codenarc.rule.Rule
 import org.gradle.api.Project
 
+import java.util.function.Function
 import java.util.function.Supplier
 
 class LintRuleRegistry {
@@ -50,7 +51,7 @@ class LintRuleRegistry {
 
 
 
-    List<Rule> buildRules(String ruleId, Supplier<Project> project, boolean critical) {
+    List<Rule> buildRules(String ruleId, Function<String, Project> project, boolean critical) {
         assert classLoader != null
         def ruleDescriptor = findRuleDescriptor(ruleId)
         if (ruleDescriptor == null)

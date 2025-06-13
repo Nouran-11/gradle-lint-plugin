@@ -32,13 +32,18 @@ import org.codenarc.ruleset.ListRuleSet
 import org.codenarc.ruleset.RuleSet
 import org.codenarc.source.SourceString
 import org.gradle.api.Project
+import org.gradle.api.provider.Provider
 
+import java.util.function.Function
 import java.util.function.Supplier
-
 class LintService {
     private final Project rootProject
-    LintService(Project rootProject) { this.rootProject = rootProject }
+   // private final DirectoryResults resultsForRootProject
     def registry = new LintRuleRegistry()
+
+   /* LintService(File rootDir) {
+        resultsForRootProject = new DirectoryResults(rootDir.absolutePath)
+    }/*
 
     /**
      * An analyzer that can be used over and over again against multiple subprojects, compiling the results, and recording
@@ -80,18 +85,24 @@ class LintService {
         }
     }
 
-    private RuleSet ruleSetForProject(Project rootProject,ProjectInfo p, boolean onlyCriticalRules) {
+    private RuleSet ruleSetForProject(ProjectInfo p, boolean onlyCriticalRules) {
+       // Supplier<Project> projectSupplier = { -> null }   //TODO need to change this null
+     //   Supplier<Project> projectSupplier = { -> projectResolver.apply(p.path) } as Supplier<Project>
+        Function<String, Project> projectResolver = { path -> rootProject.project(p.path) }
+
+
         if (p.buildFile == null || !p.buildFile.exists()) {
-            LOGGER.warn("Build file for project '{}' (path: '{}') is null or does not exist. Returning empty ruleset.", p.name, p.path)
+            LOGGER.warn("Build file for project '{}' (path: '{}') is null or does not exist. Returning empty ruleset.", projectInfo.name, projectInfo.path)
             return new ListRuleSet([])
         }
 
         List<String> rulesToConsider = p.effectiveRuleNames ?: []
-        Supplier<Project> projectSupplier = { -> rootProject.project(p.path) } as Supplier<Project>
+       // Supplier<Project> projectSupplier = { -> rootProject.project(p.path) } as Supplier<Project>
+
 
         List<Rule> includedRules = rulesToConsider.unique()
                 .collect { String ruleName ->
-                    this.registry.buildRules(ruleName, projectSupplier, p.criticalRuleNamesForThisProject.contains(ruleName))
+                    this.registry.buildRules(ruleName,projectResolver, p)
                 }
                 .flatten() as List<Rule>
 
@@ -108,27 +119,28 @@ class LintService {
     }
 
 
-    RuleSet ruleSet(ProjectTree projectTree) {
+    RuleSet ruleSet(Function<String, Project> projectResolver,ProjectTree projectTree) {
         def ruleSet = new CompositeRuleSet()
         projectTree.allProjects.each { p ->
-            ruleSet.addRuleSet(ruleSetForProject(rootProject,p, false))
+            ruleSet.addRuleSet(ruleSetForProject(projectResolver,p, false))
         }
         return ruleSet
     }
 
-    Results lint(ProjectTree projectTree ,boolean onlyCriticalRules) {
+    Results lint(Function<String, Project> projectResolver,ProjectTree projectTree ,boolean onlyCriticalRules) {
         if (projectTree.allProjects.isEmpty()) {
             return new DirectoryResults("empty_project_tree_results") // Return empty results
         }
+
         File rootDir = projectTree.allProjects.first().rootDir
         def analyzer = new ReportableAnalyzer(rootDir)
-       // assert projectTree.getOrNull() != null
-        //assert !projectTree.get().allProjects.empty
-        //List<Project> projectsToLint = [project] + project.subprojects
-        projectTree.allProjects.each {p ->         //here
+
+        projectTree.allProjects.each { p ->
+          //  Supplier<Project> projectSupplier = { -> null }
             def files = SourceCollector.getAllFiles(p.buildFile, p)
             def buildFiles = new BuildFiles(files)
-            def ruleSet = ruleSetForProject(rootProject,p,onlyCriticalRules)
+            def ruleSet = ruleSetForProject( p, onlyCriticalRules)
+
             if (!ruleSet.rules.isEmpty()) {
                 boolean containsModelAwareRule = false
                 // establish which file we are linting for each rule
@@ -138,15 +150,15 @@ class LintService {
                     containsModelAwareRule = containsModelAwareRule || rule instanceof ModelAwareGradleLintRule
                 }
 
-                analyzer.analyze( p,buildFiles.text, ruleSet)  //here
-                if(containsModelAwareRule){
-                  //  Project actualProject = projectSupplier.get()
-                    Project actualProject = rootProject.project(p.path)
-                    DependencyService.removeForProject(actualProject )
+                analyzer.analyze(p, buildFiles.text, ruleSet)  //here
+                def projectToEvaluate = projectResolver.apply(p.path)
+                projectToEvaluate.afterEvaluate { evaluatedProject ->
+                    if (containsModelAwareRule) {
+                        DependencyService.removeForProject(evaluatedProject)
+                    }
                 }
             }
         }
-
-        return analyzer.resultsForRootProject
+            return analyzer.rootResults
+        }
     }
-}

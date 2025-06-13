@@ -19,14 +19,21 @@ import com.netflix.nebula.lint.GradleLintInfoBrokerAction
 import com.netflix.nebula.lint.GradleLintPatchAction
 import com.netflix.nebula.lint.GradleLintViolationAction
 import com.netflix.nebula.lint.GradleViolation
+import com.netflix.nebula.lint.rule.dependency.DependencyService
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.Project
+import org.gradle.api.artifacts.ConfigurationContainer
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.*
 import org.gradle.internal.deprecation.DeprecationLogger
 import org.gradle.internal.logging.text.StyledTextOutput
 import org.gradle.internal.logging.text.StyledTextOutputFactory
+
+import javax.inject.Inject
+import java.util.function.Function
+import java.util.function.Supplier
 
 class ProjectInfo implements Serializable{
     @Input String name
@@ -37,7 +44,19 @@ class ProjectInfo implements Serializable{
     @Input List<String> effectiveRuleNames = []
     @Input List<String> effectiveExcludedRuleNames = []
     @Input List<String> criticalRuleNamesForThisProject = []
+   // Supplier<Project> projectSupplier
 
+    //@InputDirectory @PathSensitive(PathSensitivity.RELATIVE) File buildDir
+   // @Internal    DependencyService.DependencyServiceExtension dependencyServiceExtension
+   // Map<String, Object> properties
+    //ConfigurationContainer configurations
+
+    /*Project getProject() {
+        if (projectSupplier != null) {
+            return projectSupplier.get()
+        }
+        throw new IllegalStateException("ProjectSupplier is not available.")
+    }*/
 
     static ProjectInfo from(Project project ,GradleLintExtension rootProjectExtension) {
         if (rootProjectExtension == null) {
@@ -61,6 +80,8 @@ class ProjectInfo implements Serializable{
         List<String> actualCriticalRulesForThisProject = new ArrayList<>(projectSpecificExtension.getCriticalRules() ?: [])
 
 
+
+
         return new ProjectInfo(
                 name: project.name,
                 path: project.path,
@@ -69,10 +90,12 @@ class ProjectInfo implements Serializable{
                 buildFile: project.buildFile,
                 effectiveRuleNames: calculatedEffectiveRules,
                 effectiveExcludedRuleNames: calculatedEffectiveExcludedRules,
-                criticalRuleNamesForThisProject: actualCriticalRulesForThisProject
+                criticalRuleNamesForThisProject: actualCriticalRulesForThisProject,
+       //         projectSupplier: () -> project
         )
     }
 }
+
 
 class ProjectTree {
     @Nested
@@ -84,23 +107,16 @@ class ProjectTree {
 }
 
 abstract class LintGradleTask extends DefaultTask {
+    @Input @Optional List<GradleLintViolationAction> listeners = []
+    @Input @Optional abstract Property<Boolean> getFailOnWarning()
+    @Input @Optional abstract Property<Boolean> getOnlyCriticalRules()
+    @Input abstract Property<File> getProjectRootDir()
+    @InputDirectory @PathSensitive(PathSensitivity.ABSOLUTE)
+    abstract DirectoryProperty getRootDir()
     @Input
     @Optional
-    List<GradleLintViolationAction> listeners = []
+    abstract Property<ProjectTree> getProjectTree();
 
-    @Input
-    @Optional
-    abstract Property<Boolean> getFailOnWarning()
-
-    @Input
-    @Optional
-    abstract Property<Boolean> getOnlyCriticalRules()
-
-    @Input
-    abstract Property<File> getProjectRootDir()
-
-    @Nested
-    abstract Property<ProjectTree> getProjectTree()
 
     protected ProjectTree computeProjectTree(Project project) {
         GradleLintExtension rootExt = project.extensions.findByType(GradleLintExtension.class)
@@ -110,30 +126,33 @@ abstract class LintGradleTask extends DefaultTask {
         List<ProjectInfo> projectInfos = ([project] + project.getSubprojects().asList()).collect {Project p -> ProjectInfo.from(p, rootExt) }
         return new ProjectTree(projectInfos)
     }
-
+    @Inject
     LintGradleTask() {
         failOnWarning.convention(false)
         onlyCriticalRules.convention(false)
-        getProjectRootDir().set(getProject().getRootProject().getProjectDir())
-        projectTree.set(getProject().getProviders().provider(() -> computeProjectTree(getProject().getRootProject())))
+        //getRootDir().convention(project.rootProject.layout.projectDirectory)
+        getRootDir().convention(project.layout.projectDirectory);
+        getProjectTree().convention(project.providers.provider { computeProjectTree(project) })
         group = 'lint'
+        listeners.add(consoleOutputAction)
 
     }
 
     @TaskAction
     void lint() {
+            //TODO : comeback for new GradleLintInfoBrokerAction(project)
+       // def lintService = new LintService(rootDir)
+        Function<String, Project> projectResolver = { path -> project.project(path) }
 
-        DeprecationLogger.whileDisabled {  //here
-            def violations = new LintService(getProject().getRootProject()).lint(projectTree.get(),onlyCriticalRules.get()).violations
-                    .unique { v1, v2 -> v1.is(v2) ? 0 : 1 }
-            //File rootDirFile = projectRootDir.get()
-            //def patchAction = new GradleLintPatchAction(rootDirFile)
-            //def infoAction = new GradleLintInfoBrokerAction(rootDirFile)
-            (getListeners()  + consoleOutputAction).each {
-                it.lintFinished(violations)
-            }
+        File rootDir = projectRootDir.getOrNull()
+        if (rootDir == null || !rootDir.exists()) {
+            throw new GradleException("Root directory is not set or does not exist.")
         }
 
+        def violations = new LintService().lint( projectResolver,projectTree.get(), onlyCriticalRules.get()).violations
+                .unique { v1, v2 -> v1.is(v2) ? 0 : 1 }
+
+        listeners.each { it.lintFinished(violations) }
     }
 
     @Internal

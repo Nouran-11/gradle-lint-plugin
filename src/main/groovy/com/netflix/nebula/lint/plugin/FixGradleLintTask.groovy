@@ -84,7 +84,7 @@ abstract class FixGradleLintTask extends DefaultTask implements VerificationTask
         //TODO: address Invocation of Task.project at execution time has been deprecated.
         DeprecationLogger.whileDisabled {
             Project project = getProject()
-            def violations = new LintService(project.getRootProject()).lint(projectTree.get(), false).violations
+            def violations = new LintService().lint(projectTree.get(), false).violations
                     .unique { v1, v2 -> v1.is(v2) ? 0 : 1 }
 
             (userDefinedListeners.get() + infoBrokerAction + new GradleLintPatchAction(project)).each {
