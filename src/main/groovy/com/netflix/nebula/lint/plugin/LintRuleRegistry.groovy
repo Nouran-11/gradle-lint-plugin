@@ -21,7 +21,7 @@ import com.netflix.nebula.lint.rule.ModelAwareGradleLintRule
 import org.codenarc.rule.Rule
 import org.gradle.api.Project
 
-import java.util.function.Function
+
 import java.util.function.Supplier
 
 class LintRuleRegistry {
@@ -45,13 +45,15 @@ class LintRuleRegistry {
             return (ruleDescriptor.includes?.collect { findRules(it as String) }?.flatten() ?: []) as List<String>
     }
 
-    List<Rule> buildRules(String ruleId, Project project, boolean critical) {
-        return buildRules(ruleId, { project }, critical)
-    }
+    /*List<Rule> buildRules(String ruleId, Project project, boolean critical) {
+        return buildRules(ruleId,  project , critical)
+    }*/
 
 
 
-    List<Rule> buildRules(String ruleId, Function<String, Project> project, boolean critical) {
+    List<Rule> buildRules(String ruleId, ProjectInfo projectInfo, boolean critical) {
+        def project = projectInfo.rawProject
+        assert project != null : "Project supplied is null"
         assert classLoader != null
         def ruleDescriptor = findRuleDescriptor(ruleId)
         if (ruleDescriptor == null)
@@ -64,13 +66,13 @@ class LintRuleRegistry {
             throw new InvalidRuleException(String.format("No implementation class or includes specified for rule '%s' in %s.", ruleId, ruleDescriptor))
         }
 
-        def included = includes.collect { buildRules(it as String, project, critical) }.flatten() as List<Rule>
+        def included = includes.collect { buildRules(it as String, projectInfo, critical) }.flatten() as List<Rule>
 
         if(implClassName) {
             try {
                 Rule r = (Rule) classLoader.loadClass(implClassName).newInstance()
                 if(r instanceof ModelAwareGradleLintRule) {
-                    (r as ModelAwareGradleLintRule).project = project.get()
+                    (r as ModelAwareGradleLintRule).project = project
                 }
 
                 if(r instanceof GradleLintRule) {

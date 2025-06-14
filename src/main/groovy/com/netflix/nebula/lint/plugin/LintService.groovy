@@ -32,24 +32,29 @@ import org.codenarc.ruleset.ListRuleSet
 import org.codenarc.ruleset.RuleSet
 import org.codenarc.source.SourceString
 import org.gradle.api.Project
+import org.gradle.api.UnknownDomainObjectException
 import org.gradle.api.provider.Provider
 
 import java.util.function.Function
 import java.util.function.Supplier
+
 class LintService {
-    private final Project rootProject
-   // private final DirectoryResults resultsForRootProject
+  //  private final Supplier<Project> projectSupplier
+
+  /*  LintService(Supplier<Project> projectSupplier) {
+        this.projectSupplier = projectSupplier
+    }*/
+    //final Project project
     def registry = new LintRuleRegistry()
-
-   /* LintService(File rootDir) {
-        resultsForRootProject = new DirectoryResults(rootDir.absolutePath)
-    }/*
-
+  /*  private Supplier<Project> getProjectSupplier() {
+        return () -> this.project
+    }
+*/
     /**
      * An analyzer that can be used over and over again against multiple subprojects, compiling the results, and recording
      * the affected files according to which files the violation fixes touch
      */
-    class ReportableAnalyzer extends AbstractSourceAnalyzer implements Serializable {
+    class ReportableAnalyzer extends AbstractSourceAnalyzer implements Serializable{
         DirectoryResults resultsForRootProject
 
         ReportableAnalyzer(File rootDir) {
@@ -84,63 +89,42 @@ class LintService {
             []
         }
     }
-
+// All rule resolution (rules + critical + excluded + extension fallback) is done in ProjectInfo.from(...)
+// This method only consumes that resolved data
     private RuleSet ruleSetForProject(ProjectInfo p, boolean onlyCriticalRules) {
-       // Supplier<Project> projectSupplier = { -> null }   //TODO need to change this null
-     //   Supplier<Project> projectSupplier = { -> projectResolver.apply(p.path) } as Supplier<Project>
-        Function<String, Project> projectResolver = { path -> rootProject.project(p.path) }
+        if (p.buildFile.exists()) {
+            def includedRuleNames = p.effectiveRuleNames
 
+            if(p.effectiveExcludedRuleNames){
+                includedRuleNames = includedRuleNames.findAll { !p.effectiveExcludedRuleNames.contains(it) }
+            }
 
-        if (p.buildFile == null || !p.buildFile.exists()) {
-            LOGGER.warn("Build file for project '{}' (path: '{}') is null or does not exist. Returning empty ruleset.", projectInfo.name, projectInfo.path)
-            return new ListRuleSet([])
+            def includedRules = includedRuleNames
+                    .collect { registry.buildRules(it,p, p.criticalRuleNamesForThisProject.contains(it)) }
+                    .flatten() as List<Rule>
+
+            if (onlyCriticalRules) {
+                includedRules = includedRules.findAll { it instanceof GradleLintRule && it.critical }
+            }
+
+            return RuleSetFactory.configureRuleSet(includedRules)
         }
-
-        List<String> rulesToConsider = p.effectiveRuleNames ?: []
-       // Supplier<Project> projectSupplier = { -> rootProject.project(p.path) } as Supplier<Project>
-
-
-        List<Rule> includedRules = rulesToConsider.unique()
-                .collect { String ruleName ->
-                    this.registry.buildRules(ruleName,projectResolver, p)
-                }
-                .flatten() as List<Rule>
-
-        if (onlyCriticalRules) {
-            includedRules = includedRules.findAll { Rule rule -> rule.isCritical() }
-        }
-        List<String> excludedRuleNames = p.effectiveExcludedRuleNames ?: []
-
-        if (!excludedRuleNames.isEmpty()) {
-            includedRules.retainAll { Rule rule -> !excludedRuleNames.contains(rule.getName()) }
-        }
-
-        return RuleSetFactory.configureRuleSet(includedRules)
+        return new ListRuleSet([])
     }
 
-
-    RuleSet ruleSet(Function<String, Project> projectResolver,ProjectTree projectTree) {
+    RuleSet ruleSet(ProjectTree projectTree) {
         def ruleSet = new CompositeRuleSet()
-        projectTree.allProjects.each { p ->
-            ruleSet.addRuleSet(ruleSetForProject(projectResolver,p, false))
-        }
+        projectTree.allProjects.each { p -> ruleSet.addRuleSet(ruleSetForProject(p, false)) }
         return ruleSet
     }
 
-    Results lint(Function<String, Project> projectResolver,ProjectTree projectTree ,boolean onlyCriticalRules) {
-        if (projectTree.allProjects.isEmpty()) {
-            return new DirectoryResults("empty_project_tree_results") // Return empty results
-        }
-
-        File rootDir = projectTree.allProjects.first().rootDir
-        def analyzer = new ReportableAnalyzer(rootDir)
+    Results lint(ProjectTree projectTree, boolean onlyCriticalRules) {
+        def analyzer = new ReportableAnalyzer(projectTree.allProjects.first().rootDir)
 
         projectTree.allProjects.each { p ->
-          //  Supplier<Project> projectSupplier = { -> null }
             def files = SourceCollector.getAllFiles(p.buildFile, p)
             def buildFiles = new BuildFiles(files)
-            def ruleSet = ruleSetForProject( p, onlyCriticalRules)
-
+            def ruleSet = ruleSetForProject(p, onlyCriticalRules)
             if (!ruleSet.rules.isEmpty()) {
                 boolean containsModelAwareRule = false
                 // establish which file we are linting for each rule
@@ -149,16 +133,13 @@ class LintService {
                         rule.buildFiles = buildFiles
                     containsModelAwareRule = containsModelAwareRule || rule instanceof ModelAwareGradleLintRule
                 }
-
-                analyzer.analyze(p, buildFiles.text, ruleSet)  //here
-                def projectToEvaluate = projectResolver.apply(p.path)
-                projectToEvaluate.afterEvaluate { evaluatedProject ->
-                    if (containsModelAwareRule) {
-                        DependencyService.removeForProject(evaluatedProject)
-                    }
+                analyzer.analyze(p, buildFiles.text, ruleSet)
+                if (containsModelAwareRule) {
+                    DependencyService.removeForProject(p)
                 }
             }
+
         }
-            return analyzer.rootResults
-        }
+        return analyzer.resultsForRootProject
     }
+}

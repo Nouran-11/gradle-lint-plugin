@@ -28,6 +28,7 @@ import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.*
 import org.gradle.internal.deprecation.DeprecationLogger
+import org.gradle.internal.impldep.kotlinx.serialization.Transient
 import org.gradle.internal.logging.text.StyledTextOutput
 import org.gradle.internal.logging.text.StyledTextOutputFactory
 
@@ -44,19 +45,9 @@ class ProjectInfo implements Serializable{
     @Input List<String> effectiveRuleNames = []
     @Input List<String> effectiveExcludedRuleNames = []
     @Input List<String> criticalRuleNamesForThisProject = []
-   // Supplier<Project> projectSupplier
+    transient Project rawProject
 
-    //@InputDirectory @PathSensitive(PathSensitivity.RELATIVE) File buildDir
-   // @Internal    DependencyService.DependencyServiceExtension dependencyServiceExtension
-   // Map<String, Object> properties
-    //ConfigurationContainer configurations
 
-    /*Project getProject() {
-        if (projectSupplier != null) {
-            return projectSupplier.get()
-        }
-        throw new IllegalStateException("ProjectSupplier is not available.")
-    }*/
 
     static ProjectInfo from(Project project ,GradleLintExtension rootProjectExtension) {
         if (rootProjectExtension == null) {
@@ -83,6 +74,7 @@ class ProjectInfo implements Serializable{
 
 
         return new ProjectInfo(
+             //   project: project,
                 name: project.name,
                 path: project.path,
                 projectDir: project.projectDir,
@@ -91,7 +83,7 @@ class ProjectInfo implements Serializable{
                 effectiveRuleNames: calculatedEffectiveRules,
                 effectiveExcludedRuleNames: calculatedEffectiveExcludedRules,
                 criticalRuleNamesForThisProject: actualCriticalRulesForThisProject,
-       //         projectSupplier: () -> project
+                rawProject: project
         )
     }
 }
@@ -131,6 +123,7 @@ abstract class LintGradleTask extends DefaultTask {
         failOnWarning.convention(false)
         onlyCriticalRules.convention(false)
         //getRootDir().convention(project.rootProject.layout.projectDirectory)
+        //lintService = new LintService(() -> getProject())
         getRootDir().convention(project.layout.projectDirectory);
         getProjectTree().convention(project.providers.provider { computeProjectTree(project) })
         group = 'lint'
@@ -140,16 +133,13 @@ abstract class LintGradleTask extends DefaultTask {
 
     @TaskAction
     void lint() {
-            //TODO : comeback for new GradleLintInfoBrokerAction(project)
-       // def lintService = new LintService(rootDir)
-        Function<String, Project> projectResolver = { path -> project.project(path) }
 
         File rootDir = projectRootDir.getOrNull()
         if (rootDir == null || !rootDir.exists()) {
             throw new GradleException("Root directory is not set or does not exist.")
         }
 
-        def violations = new LintService().lint( projectResolver,projectTree.get(), onlyCriticalRules.get()).violations
+        def violations = new LintService().lint( projectTree.get(), onlyCriticalRules.get()).violations
                 .unique { v1, v2 -> v1.is(v2) ? 0 : 1 }
 
         listeners.each { it.lintFinished(violations) }
