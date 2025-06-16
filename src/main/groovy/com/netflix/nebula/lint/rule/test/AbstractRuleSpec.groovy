@@ -32,6 +32,8 @@ import org.codenarc.ruleset.RuleSet
 import org.eclipse.jgit.api.ApplyCommand
 import org.gradle.api.Project
 
+import java.util.function.Supplier
+
 @CompileStatic
 abstract class AbstractRuleSpec extends ProjectSpec {
     def setupSpec() {

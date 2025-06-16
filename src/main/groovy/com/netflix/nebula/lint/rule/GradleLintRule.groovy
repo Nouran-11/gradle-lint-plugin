@@ -32,6 +32,7 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
 import java.text.ParseException
+import java.util.function.Supplier
 
 abstract class GradleLintRule extends GroovyAstVisitor implements Rule {
     Project project

@@ -20,6 +20,7 @@ package com.netflix.nebula.lint.plugin
 import com.netflix.nebula.lint.GradleViolation
 import com.netflix.nebula.lint.rule.BuildFiles
 import com.netflix.nebula.lint.rule.GradleLintRule
+import com.netflix.nebula.lint.rule.ModelAwareGradleLintRule
 import com.netflix.nebula.lint.rule.dependency.DependencyService
 import org.codenarc.analyzer.AbstractSourceAnalyzer
 import org.codenarc.results.DirectoryResults
@@ -31,17 +32,29 @@ import org.codenarc.ruleset.ListRuleSet
 import org.codenarc.ruleset.RuleSet
 import org.codenarc.source.SourceString
 import org.gradle.api.Project
+import org.gradle.api.UnknownDomainObjectException
+import org.gradle.api.provider.Provider
 
+import java.util.function.Function
 import java.util.function.Supplier
 
 class LintService {
-    def registry = new LintRuleRegistry()
+  //  private final Supplier<Project> projectSupplier
 
+  /*  LintService(Supplier<Project> projectSupplier) {
+        this.projectSupplier = projectSupplier
+    }*/
+    //final Project project
+    def registry = new LintRuleRegistry()
+  /*  private Supplier<Project> getProjectSupplier() {
+        return () -> this.project
+    }
+*/
     /**
      * An analyzer that can be used over and over again against multiple subprojects, compiling the results, and recording
      * the affected files according to which files the violation fixes touch
      */
-    class ReportableAnalyzer extends AbstractSourceAnalyzer implements Serializable {
+    class ReportableAnalyzer extends AbstractSourceAnalyzer implements Serializable{
         DirectoryResults resultsForRootProject
 
         ReportableAnalyzer(File rootDir) {
@@ -76,70 +89,57 @@ class LintService {
             []
         }
     }
-
+// All rule resolution (rules + critical + excluded + extension fallback) is done in ProjectInfo.from(...)
+// This method only consumes that resolved data
     private RuleSet ruleSetForProject(ProjectInfo p, boolean onlyCriticalRules) {
-        if (p.buildFile == null || !p.buildFile.exists()) {
-            LOGGER.warn("Build file for project '{}' (path: '{}') is null or does not exist. Returning empty ruleset.", p.name, p.path)
-            return new ListRuleSet([])
+        if (p.buildFile.exists()) {
+            def includedRuleNames = p.effectiveRuleNames
+
+            if(p.effectiveExcludedRuleNames){
+                includedRuleNames = includedRuleNames.findAll { !p.effectiveExcludedRuleNames.contains(it) }
+            }
+
+            def includedRules = includedRuleNames
+                    .collect { registry.buildRules(it,p, p.criticalRuleNamesForThisProject.contains(it)) }
+                    .flatten() as List<Rule>
+
+            if (onlyCriticalRules) {
+                includedRules = includedRules.findAll { it instanceof GradleLintRule && it.critical }
+            }
+
+            return RuleSetFactory.configureRuleSet(includedRules)
         }
-
-        List<String> rulesToConsider = p.effectiveRuleNames ?: []
-
-        Supplier<Project> projectSupplier = { -> null } as Supplier<Project>
-
-        List<Rule> includedRules = rulesToConsider.unique()
-                .collect { String ruleName ->
-                    this.registry.buildRules(ruleName, projectSupplier, p.criticalRuleNamesForThisProject.contains(ruleName))
-                }
-                .flatten() as List<Rule>
-
-        if (onlyCriticalRules) {
-            includedRules = includedRules.findAll { Rule rule -> rule.isCritical() }
-        }
-        List<String> excludedRuleNames = p.effectiveExcludedRuleNames ?: []
-
-        if (!excludedRuleNames.isEmpty()) {
-            includedRules.retainAll { Rule rule -> !excludedRuleNames.contains(rule.getName()) }
-        }
-
-        return RuleSetFactory.configureRuleSet(includedRules)
+        return new ListRuleSet([])
     }
-
 
     RuleSet ruleSet(ProjectTree projectTree) {
         def ruleSet = new CompositeRuleSet()
-        projectTree.allProjects.each { ProjectInfo pInfo ->
-            ruleSet.addRuleSet(ruleSetForProject(pInfo, false))
-        }
+        projectTree.allProjects.each { p -> ruleSet.addRuleSet(ruleSetForProject(p, false)) }
         return ruleSet
     }
 
-    Results lint(ProjectTree projectTree , boolean onlyCriticalRules) {
-        if (projectTree.allProjects.isEmpty()) {
-            return new DirectoryResults("empty_project_tree_results") // Return empty results
-        }
-        File rootDir = projectTree.allProjects.first().rootDir
-        def analyzer = new ReportableAnalyzer(rootDir)
-       // assert projectTree.getOrNull() != null
-        //assert !projectTree.get().allProjects.empty
-        //List<Project> projectsToLint = [project] + project.subprojects
-        projectTree.allProjects.each {p ->
+    Results lint(ProjectTree projectTree, boolean onlyCriticalRules) {
+        def analyzer = new ReportableAnalyzer(projectTree.allProjects.first().rootDir)
+
+        projectTree.allProjects.each { p ->
             def files = SourceCollector.getAllFiles(p.buildFile, p)
             def buildFiles = new BuildFiles(files)
             def ruleSet = ruleSetForProject(p, onlyCriticalRules)
             if (!ruleSet.rules.isEmpty()) {
+                boolean containsModelAwareRule = false
                 // establish which file we are linting for each rule
                 ruleSet.rules.each { rule ->
                     if (rule instanceof GradleLintRule)
                         rule.buildFiles = buildFiles
+                    containsModelAwareRule = containsModelAwareRule || rule instanceof ModelAwareGradleLintRule
                 }
-
                 analyzer.analyze(p, buildFiles.text, ruleSet)
-
-                DependencyService.removeForProject(p)
+                if (containsModelAwareRule) {
+                    DependencyService.removeForProject(p)
+                }
             }
-        }
 
+        }
         return analyzer.resultsForRootProject
     }
 }
